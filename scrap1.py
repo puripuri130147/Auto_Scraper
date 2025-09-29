@@ -201,7 +201,7 @@ def drive_merge_and_update_df_update_only(
 # ======================================================================
 def make_driver() -> webdriver.Chrome:
     opt = Options()
-    opt.add_argument("--headless=new")
+    opt.add_argument("--headless")
     opt.add_argument("--no-sandbox")
     opt.add_argument("--disable-dev-shm-usage")
     opt.add_argument("--window-size=1366,768")
@@ -456,3 +456,4 @@ if __name__ == "__main__":
         body = f"สคริปต์ล้มเหลวเมื่อ {when}\n\nError:\n{repr(e)}"
         send_email(subject, body)
         raise
+
