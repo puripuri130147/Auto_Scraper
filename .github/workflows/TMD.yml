@@ -29,9 +29,15 @@ jobs:
           sudo apt install -y wget unzip xvfb libxi6 libgconf-2-4
           wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
           sudo dpkg -i google-chrome-stable_current_amd64.deb || sudo apt -f install -y
-
+      
       - name: Install ChromeDriver
-        uses: actions/setup-chromedriver@v1
+        run: |
+          CHROME_VERSION=$(google-chrome --version | grep -oP '\d+\.\d+\.\d+')
+          LATEST=$(curl -sS chromedriver.storage.googleapis.com/LATEST_RELEASE_$CHROME_VERSION)
+          wget -O /tmp/chromedriver.zip https://chromedriver.storage.googleapis.com/$LATEST/chromedriver_linux64.zip
+          unzip /tmp/chromedriver.zip -d $HOME/bin
+          chmod +x $HOME/bin/chromedriver
+          echo "$HOME/bin" >> $GITHUB_PATH
 
       - name: Set timezone to Bangkok
         run: sudo timedatectl set-timezone Asia/Bangkok
