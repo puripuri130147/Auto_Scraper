@@ -17,6 +17,8 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, StaleElementReferenceException
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager  # <-- ใช้ webdriver-manager
 
 # ======================================================================
 # CONFIG
@@ -48,7 +50,10 @@ def make_driver() -> webdriver.Chrome:
     opt.add_argument("--disable-dev-shm-usage")
     opt.add_argument("--window-size=1366,768")
     opt.page_load_strategy = PAGE_LOAD_STRATEGY
-    drv = webdriver.Chrome(options=opt)
+
+    # ใช้ webdriver-manager ติดตั้ง ChromeDriver อัตโนมัติ
+    service = Service(ChromeDriverManager().install())
+    drv = webdriver.Chrome(service=service, options=opt)
     drv.set_page_load_timeout(PAGELOAD_TIMEOUT)
     drv.set_script_timeout(SCRIPT_TIMEOUT)
     return drv
@@ -260,4 +265,5 @@ def _try_scrape_provinces(
 # ======================================================================
 if __name__ == "__main__":
     main()
+
 
