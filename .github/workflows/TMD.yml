@@ -1,16 +1,17 @@
-name: TMD 7-day Forecast
+name: TMD Scraper
 
 on:
   schedule:
-    - cron: '0 14 * * *'   # รันทุกวันเวลา 21:00 ไทย
+    - cron: "0 13 * * *"  # ทุกวัน 20:00 ไทย
   workflow_dispatch:
 
 jobs:
-  scrape-and-upload:
+  scrape:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -19,10 +20,10 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install --upgrade pip
+          python -m pip install --upgrade pip
           pip install pandas selenium webdriver-manager
 
-      - name: Run TMD scraper
+      - name: Run scraper
         run: python scrap1.py
 
       # --- ใช้ GitHub Action ของ gdrive-upload-action แทน ---
