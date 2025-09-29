@@ -32,9 +32,16 @@ jobs:
 
       - name: Install ChromeDriver
         run: |
-          CHROME_VER=$(google-chrome --version | grep -oP '\d+\.\d+\.\d+')
-          echo "Chrome version: $CHROME_VER"
-          wget -O /tmp/chromedriver.zip "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/$CHROME_VER/linux64/chromedriver-linux64.zip"
+          # ดึง major version ของ Chrome
+          CHROME_MAJOR=$(google-chrome --version | grep -oP '\d+' | head -1)
+          echo "Chrome major version: $CHROME_MAJOR"
+      
+          # ดึง latest patch version จาก Google Storage
+          LATEST_PATCH=$(curl -s "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/LATEST_RELEASE_$CHROME_MAJOR")
+          echo "ChromeDriver latest patch: $LATEST_PATCH"
+      
+          # ดาวน์โหลด ChromeDriver
+          wget -O /tmp/chromedriver.zip "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/$LATEST_PATCH/linux64/chromedriver-linux64.zip"
           unzip /tmp/chromedriver.zip -d $HOME/bin
           chmod +x $HOME/bin/chromedriver
           echo "$HOME/bin" >> $GITHUB_PATH
