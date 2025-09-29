@@ -1,4 +1,4 @@
-name: TMD
+name: Update TMD Forecast Data to Google Drive
 on:
 schedule:
 - cron: '0 14 * * *' # รันทุกวันเวลา 14:00 UTC (21:00 เวลาไทย)
