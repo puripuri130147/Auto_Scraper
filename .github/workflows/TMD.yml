@@ -1,1 +1,55 @@
+name: TMD 7-Day Scraper
 
+on:
+  schedule:
+    - cron: "30 23 * * *"   # 06:30 ICT
+  workflow_dispatch:
+
+jobs:
+  run-scraper:
+    runs-on: ubuntu-latest
+    env:
+      CSV_OUT: ${{ github.workspace }}/tmd_7day_forecast_today.csv
+      ENABLE_GOOGLE_DRIVE_UPLOAD: "true"
+      SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ID }}
+      SERVICE_ACCOUNT_FILE: ""
+      DRIVE_FILE_ID: ${{ secrets.GOOGLE_ID }}
+      CSV_MIMETYPE: text/csv
+      EMAIL_ENABLED: "false"
+      PAGELOAD_TIMEOUT: "50"
+      SCRIPT_TIMEOUT: "50"
+      WAIT_MED: "20"
+      WAIT_LONG: "35"
+      RETRIES_PER_PROVINCE: "2"
+      MAX_SCRAPE_PASSES: "5"
+      SLEEP_MIN: "0.7"
+      SLEEP_MAX: "1.2"
+      PAGE_LOAD_STRATEGY: "none"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: browser-actions/setup-chrome@v1
+        with:
+          chrome-version: stable
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install selenium==4.* pandas google-api-python-client google-auth google-auth-httplib2 google-auth-oauthlib
+
+      - name: Run scraper
+        run: python scrap1.py
+        timeout-minutes: 25
+
+      - name: Upload CSV artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tmd_7day_forecast_today
+          path: ${{ env.CSV_OUT }}
+          if-no-files-found: warn
