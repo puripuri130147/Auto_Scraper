@@ -37,6 +37,10 @@ MAX_SCRAPE_PASSES = int(os.getenv("MAX_SCRAPE_PASSES", "5"))
 SLEEP_MIN = float(os.getenv("SLEEP_MIN", "0.7"))
 SLEEP_MAX = float(os.getenv("SLEEP_MAX", "1.2"))
 
+WAIT_MED = 40
+WAIT_LONG = 60
+PAGELOAD_TIMEOUT = 60
+
 PAGE_LOAD_STRATEGY: str = os.getenv("PAGE_LOAD_STRATEGY", "none")
 RE_INT = re.compile(r"(\d+)")
 
@@ -48,7 +52,8 @@ def make_driver() -> webdriver.Chrome:
     opt.add_argument("--headless=new")
     opt.add_argument("--no-sandbox")
     opt.add_argument("--disable-dev-shm-usage")
-    opt.add_argument("--window-size=1366,768")
+    opt.add_argument("--disable-gpu")
+    opt.add_argument("--window-size=1920,1080")
     opt.page_load_strategy = PAGE_LOAD_STRATEGY
 
     # ใช้ webdriver-manager ติดตั้ง ChromeDriver อัตโนมัติ
@@ -77,8 +82,8 @@ def open_home_ready(driver) -> None:
 def collect_mapping_from_select(driver) -> Dict[str, str]:
     MAX_TRIES = 5
     for attempt in range(1, MAX_TRIES + 1):
-        sel = WebDriverWait(driver, WAIT_MED).until(
-            EC.presence_of_element_located((By.ID, "province-selector"))
+        sel = WebDriverWait(driver, WAIT_LONG).until(
+            EC.visibility_of_element_located((By.ID, "province-selector"))
         )
         try:
             driver.execute_script("arguments[0].focus();", sel)
@@ -265,5 +270,3 @@ def _try_scrape_provinces(
 # ======================================================================
 if __name__ == "__main__":
     main()
-
-
