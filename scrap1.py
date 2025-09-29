@@ -22,7 +22,7 @@ from selenium.common.exceptions import TimeoutException, StaleElementReferenceEx
 # CONFIG
 # ======================================================================
 HOME: str = os.getenv("TMD_HOME", "https://www.tmd.go.th")
-CSV_OUT: str = os.getenv("CSV_OUT", "plume_with_country.csv")
+CSV_OUT: str = os.getenv("CSV_OUT", "tmd_7day_forecast_today.csv")
 
 PAGELOAD_TIMEOUT: int = int(os.getenv("PAGELOAD_TIMEOUT", "50"))
 SCRIPT_TIMEOUT: int = int(os.getenv("SCRIPT_TIMEOUT", "50"))
@@ -260,3 +260,4 @@ def _try_scrape_provinces(
 # ======================================================================
 if __name__ == "__main__":
     main()
+
