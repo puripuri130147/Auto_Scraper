@@ -10,7 +10,6 @@ from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
-# -------- Selenium --------
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
@@ -18,30 +17,24 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, StaleElementReferenceException
 from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager  # <-- ใช้ webdriver-manager
+from webdriver_manager.chrome import ChromeDriverManager
 
 # ======================================================================
 # CONFIG
 # ======================================================================
-HOME: str = os.getenv("TMD_HOME", "https://www.tmd.go.th")
-CSV_OUT: str = os.getenv("CSV_OUT", "tmd_7day_forecast_today.csv")
+HOME = os.getenv("TMD_HOME", "https://www.tmd.go.th")
+CSV_OUT = os.getenv("CSV_OUT", "tmd_7day_forecast_today.csv")
 
-PAGELOAD_TIMEOUT: int = int(os.getenv("PAGELOAD_TIMEOUT", "50"))
-SCRIPT_TIMEOUT: int = int(os.getenv("SCRIPT_TIMEOUT", "50"))
-WAIT_MED: int = int(os.getenv("WAIT_MED", "20"))
-WAIT_LONG: int = int(os.getenv("WAIT_LONG", "35"))
-
-RETRIES_PER_PROVINCE = int(os.getenv("RETRIES_PER_PROVINCE", "2"))
-MAX_SCRAPE_PASSES = int(os.getenv("MAX_SCRAPE_PASSES", "5"))
-
-SLEEP_MIN = float(os.getenv("SLEEP_MIN", "0.7"))
-SLEEP_MAX = float(os.getenv("SLEEP_MAX", "1.2"))
-
+PAGELOAD_TIMEOUT = 60
+SCRIPT_TIMEOUT = 60
 WAIT_MED = 40
 WAIT_LONG = 60
-PAGELOAD_TIMEOUT = 60
+RETRIES_PER_PROVINCE = 2
+MAX_SCRAPE_PASSES = 5
+SLEEP_MIN = 0.7
+SLEEP_MAX = 1.2
+PAGE_LOAD_STRATEGY = "none"
 
-PAGE_LOAD_STRATEGY: str = os.getenv("PAGE_LOAD_STRATEGY", "none")
 RE_INT = re.compile(r"(\d+)")
 
 # ======================================================================
@@ -56,7 +49,6 @@ def make_driver() -> webdriver.Chrome:
     opt.add_argument("--window-size=1920,1080")
     opt.page_load_strategy = PAGE_LOAD_STRATEGY
 
-    # ใช้ webdriver-manager ติดตั้ง ChromeDriver อัตโนมัติ
     service = Service(ChromeDriverManager().install())
     drv = webdriver.Chrome(service=service, options=opt)
     drv.set_page_load_timeout(PAGELOAD_TIMEOUT)
@@ -73,7 +65,7 @@ def safe_get(driver, url, timeout=PAGELOAD_TIMEOUT):
         except Exception:
             pass
 
-def open_home_ready(driver) -> None:
+def open_home_ready(driver):
     safe_get(driver, HOME, timeout=WAIT_MED)
     WebDriverWait(driver, WAIT_LONG).until(
         EC.presence_of_element_located((By.ID, "province-selector"))
@@ -82,39 +74,42 @@ def open_home_ready(driver) -> None:
 def collect_mapping_from_select(driver) -> Dict[str, str]:
     MAX_TRIES = 5
     for attempt in range(1, MAX_TRIES + 1):
-        sel = WebDriverWait(driver, WAIT_LONG).until(
-            EC.visibility_of_element_located((By.ID, "province-selector"))
-        )
+        print(f"🔄 พยายามดึง select list รอบที่ {attempt}")
         try:
+            sel = WebDriverWait(driver, WAIT_LONG).until(
+                EC.visibility_of_element_located((By.ID, "province-selector"))
+            )
             driver.execute_script("arguments[0].focus();", sel)
             driver.execute_script("arguments[0].click();", sel)
-            time.sleep(0.2)
-        except Exception:
-            pass
+            time.sleep(0.5)
 
-        mapping: Dict[str, str] = {}
-        try:
             options = sel.find_elements(By.TAG_NAME, "option")
-            for op in options:
-                name = (op.text or "").strip()
-                val = (op.get_attribute("value") or "").strip()
-                if not name or not val or name.startswith("เลือก"):
-                    continue
-                mapping[name] = val
-        except StaleElementReferenceException:
-            mapping = {}
+            mapping = {
+                (op.text or "").strip(): (op.get_attribute("value") or "").strip()
+                for op in options
+                if (op.text or "").strip() and (op.get_attribute("value") or "").strip() and not op.text.startswith("เลือก")
+            }
 
-        if len(mapping) >= 10:
-            return mapping
-
-        time.sleep(0.5)
+            print(f"🔹 เจอ {len(mapping)} จังหวัด")
+            if len(mapping) >= 10:
+                return mapping
+            else:
+                print(f"⚠️ option น้อยเกินไป, refresh หน้าเว็บ")
+        except TimeoutException:
+            print("⚠️ ไม่เจอ select element, refresh หน้าเว็บ")
         driver.refresh()
-        time.sleep(0.5)
+        time.sleep(2)
 
-    raise TimeoutException("อ่านรายชื่อจังหวัดได้น้อยผิดปกติ")
+    raise TimeoutException("อ่านรายชื่อจังหวัดไม่สำเร็จ")
 
 def _js_set_select_value(driver, value: str) -> bool:
-    js = "var s=document.getElementById('province-selector');if(!s)return false;s.value=arguments[0];s.dispatchEvent(new Event('change',{bubbles:true}));return true;"
+    js = """
+    var s=document.getElementById('province-selector');
+    if(!s)return false;
+    s.value=arguments[0];
+    s.dispatchEvent(new Event('change',{bubbles:true}));
+    return true;
+    """
     return bool(driver.execute_script(js, value))
 
 def select_province(driver, province_name: str, mapping: Dict[str, str]) -> bool:
@@ -162,68 +157,10 @@ def parse_today_fast(driver, province_name: str) -> Optional[Dict[str, str]]:
     return None
 
 # ======================================================================
-# MAIN
+# SCRAPE LOOP
 # ======================================================================
-def main():
-    driver = make_driver()
-    all_rows: List[Dict[str, str]] = []
-    failed: List[str] = []
-
-    try:
-        open_home_ready(driver)
-        mapping = collect_mapping_from_select(driver)
-        names = list(mapping.keys())
-        print(f"พบจังหวัด {len(names)} รายการ")
-
-        to_try = names[:]
-        pass_num = 0
-        prev_failed_count: Optional[int] = None
-
-        while to_try and pass_num < MAX_SCRAPE_PASSES:
-            pass_num += 1
-            print(f"\nเริ่มรอบที่ {pass_num} (ลอง {len(to_try)} จังหวัด)")
-            rows, failed_this = _try_scrape_provinces(driver, to_try, RETRIES_PER_PROVINCE, mapping)
-
-            all_rows.extend(rows)
-            print(f"รอบ {pass_num} สำเร็จ {len(rows)} จังหวัด, พลาด {len(failed_this)} จังหวัด")
-
-            if not failed_this:
-                print("✅ เก็บข้อมูลครบทุกจังหวัดแล้ว")
-                failed = []
-                break
-
-            if prev_failed_count is not None and len(failed_this) >= prev_failed_count:
-                print("⚠️ ไม่มีความคืบหน้าจากรอบก่อนหน้า")
-                failed = failed_this
-                break
-
-            to_try = failed_this
-            prev_failed_count = len(failed_this)
-
-        else:
-            failed = to_try if to_try else []
-
-    finally:
-        driver.quit()
-
-    new_df = pd.DataFrame(all_rows)
-
-    if not new_df.empty:
-        new_df.to_csv(CSV_OUT, index=False, encoding="utf-8-sig")
-        print(f"\n📝 บันทึกข้อมูลลงไฟล์: {CSV_OUT}")
-    else:
-        print("⚠️ ไม่ได้ข้อมูลใหม่")
-
-# ======================================================================
-# INTERNAL: scrape loop
-# ======================================================================
-def _try_scrape_provinces(
-    driver,
-    names: List[str],
-    retries_per_province: int,
-    mapping: Dict[str, str],
-) -> Tuple[List[Dict[str, str]], List[str]]:
-    rows: List[Dict[str, str]] = []
+def _try_scrape_provinces(driver, names: List[str], retries_per_province: int, mapping: Dict[str, str]) -> Tuple[List[Dict[str,str]], List[str]]:
+    rows: List[Dict[str,str]] = []
     failed: List[str] = []
     total = len(names)
     print(f"เริ่มดึง {total} จังหวัด")
@@ -249,21 +186,67 @@ def _try_scrape_provinces(
                     break
                 else:
                     raise RuntimeError("อ่าน card วันนี้ ไม่สำเร็จ")
-
             except (StaleElementReferenceException, TimeoutException):
                 driver.refresh()
-                time.sleep(0.8)
+                time.sleep(1)
             except Exception as e:
                 if attempt < retries_per_province - 1:
                     driver.refresh()
-                    time.sleep(0.8)
+                    time.sleep(1)
                 else:
                     print(f"[{i}/{total}] {name} ✖ {e}")
-
         if not ok:
             failed.append(name)
-
     return rows, failed
+
+# ======================================================================
+# MAIN
+# ======================================================================
+def main():
+    driver = make_driver()
+    all_rows: List[Dict[str,str]] = []
+    failed: List[str] = []
+
+    try:
+        open_home_ready(driver)
+        mapping = collect_mapping_from_select(driver)
+        names = list(mapping.keys())
+        print(f"พบจังหวัด {len(names)} รายการ")
+
+        to_try = names[:]
+        pass_num = 0
+        prev_failed_count: Optional[int] = None
+
+        while to_try and pass_num < MAX_SCRAPE_PASSES:
+            pass_num += 1
+            print(f"\nเริ่มรอบที่ {pass_num} (ลอง {len(to_try)} จังหวัด)")
+            rows, failed_this = _try_scrape_provinces(driver, to_try, RETRIES_PER_PROVINCE, mapping)
+            all_rows.extend(rows)
+            print(f"รอบ {pass_num} สำเร็จ {len(rows)} จังหวัด, พลาด {len(failed_this)} จังหวัด")
+
+            if not failed_this:
+                print("✅ เก็บข้อมูลครบทุกจังหวัดแล้ว")
+                failed = []
+                break
+
+            if prev_failed_count is not None and len(failed_this) >= prev_failed_count:
+                print("⚠️ ไม่มีความคืบหน้าจากรอบก่อนหน้า")
+                failed = failed_this
+                break
+
+            to_try = failed_this
+            prev_failed_count = len(failed_this)
+        else:
+            failed = to_try if to_try else []
+    finally:
+        driver.quit()
+
+    new_df = pd.DataFrame(all_rows)
+    if not new_df.empty:
+        new_df.to_csv(CSV_OUT, index=False, encoding="utf-8-sig")
+        print(f"\n📝 บันทึกข้อมูลลงไฟล์: {CSV_OUT}")
+    else:
+        print("⚠️ ไม่ได้ข้อมูลใหม่")
 
 # ======================================================================
 # ENTRY
