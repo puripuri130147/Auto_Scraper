@@ -4,7 +4,6 @@ from __future__ import annotations
 import os
 import re
 import time
-import json
 import random
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
@@ -19,31 +18,11 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, StaleElementReferenceException
 
-# -------- Google Drive API (Service Account) --------
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
-from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
-
-from io import BytesIO, StringIO
-
 # ======================================================================
 # CONFIG
 # ======================================================================
 HOME: str = os.getenv("TMD_HOME", "https://www.tmd.go.th")
-CSV_OUT: str = os.getenv("CSV_OUT", r"C:\Project_End\CodeProject\tmd_7day_forecast_today.csv")
-
-ENABLE_GOOGLE_DRIVE_UPLOAD: bool = os.getenv("ENABLE_GOOGLE_DRIVE_UPLOAD", "true").lower() == "true"
-SERVICE_ACCOUNT_JSON: Optional[str] = os.getenv("SERVICE_ACCOUNT_JSON")  # JSON string (ทางเลือก)
-SERVICE_ACCOUNT_FILE: str = os.getenv(
-    "SERVICE_ACCOUNT_FILE",
-    r"C:\Project_End\CodeProject\githubproject-467507-653192ee67bf.json",
-)
-
-# 🔒 ใช้ fileId เดิมแบบบังคับ (แก้เป็น id ของไฟล์ปลายทางของคุณ)
-DRIVE_FILE_ID: Optional[str] = "1jt82tywKHUTY7z5nkEgQ5v_7LXdH2XAt"
-
-CSV_MIMETYPE: str = "text/csv"
+CSV_OUT: str = os.getenv("CSV_OUT", "plume_with_country.csv")
 
 PAGELOAD_TIMEOUT: int = int(os.getenv("PAGELOAD_TIMEOUT", "50"))
 SCRIPT_TIMEOUT: int = int(os.getenv("SCRIPT_TIMEOUT", "50"))
@@ -59,149 +38,12 @@ SLEEP_MAX = float(os.getenv("SLEEP_MAX", "1.2"))
 PAGE_LOAD_STRATEGY: str = os.getenv("PAGE_LOAD_STRATEGY", "none")
 RE_INT = re.compile(r"(\d+)")
 
-# ================= Email Notify (SMTP) =================
-EMAIL_ENABLED: bool = os.getenv("EMAIL_ENABLED", "true").lower() == "true"
-SMTP_SERVER: str = os.getenv("SMTP_SERVER", "smtp.gmail.com")
-SMTP_PORT: int = int(os.getenv("SMTP_PORT", "587"))
-EMAIL_SENDER: str = os.getenv("EMAIL_SENDER", "pph656512@gmail.com")
-EMAIL_PASSWORD: str = os.getenv("EMAIL_PASSWORD", "nfns uuan ayrx uykm")  # แนะนำใช้ ENV จริง
-EMAIL_TO: str = os.getenv("EMAIL_TO", "pph656512@gmail.com")
-
-
-def send_email(subject: str, body_text: str) -> None:
-    if not EMAIL_ENABLED:
-        return
-    try:
-        from email.mime.text import MIMEText
-        from email.mime.multipart import MIMEMultipart
-        import smtplib
-
-        msg = MIMEMultipart()
-        msg["From"] = EMAIL_SENDER
-        msg["To"] = EMAIL_TO
-        msg["Subject"] = subject
-        msg.attach(MIMEText(body_text, "plain", "utf-8"))
-
-        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
-        server.starttls()
-        server.login(EMAIL_SENDER, EMAIL_PASSWORD)
-        server.sendmail(EMAIL_SENDER, [x.strip() for x in EMAIL_TO.split(",")], msg.as_string())
-        server.quit()
-        print("📧 ส่งอีเมลแจ้งเตือนแล้ว")
-    except Exception as e:
-        print("⚠️ ส่งอีเมลล้มเหลว:", e)
-
-# ======================================================================
-# GOOGLE DRIVE HELPERS (Update-only)
-# ======================================================================
-def _check_prereq() -> None:
-    if not ENABLE_GOOGLE_DRIVE_UPLOAD:
-        return
-    if not (SERVICE_ACCOUNT_JSON or (SERVICE_ACCOUNT_FILE and os.path.exists(SERVICE_ACCOUNT_FILE))):
-        raise FileNotFoundError("ไม่พบ Service Account (ตั้ง SERVICE_ACCOUNT_JSON หรือ SERVICE_ACCOUNT_FILE)")
-    if not DRIVE_FILE_ID:
-        raise RuntimeError("ต้องตั้ง DRIVE_FILE_ID เป็น fileId ของไฟล์ปลายทางเพื่ออัปเดตลิงก์เดิม")
-
-def build_drive_service():
-    scopes = ["https://www.googleapis.com/auth/drive"]
-    if SERVICE_ACCOUNT_JSON:
-        creds = service_account.Credentials.from_service_account_info(
-            json.loads(SERVICE_ACCOUNT_JSON), scopes=scopes
-        )
-    else:
-        creds = service_account.Credentials.from_service_account_file(
-            SERVICE_ACCOUNT_FILE, scopes=scopes
-        )
-    return build("drive", "v3", credentials=creds, cache_discovery=False)
-
-def drive_read_csv_as_df(service, file_id: str) -> Optional[pd.DataFrame]:
-    try:
-        req = service.files().get_media(fileId=file_id)
-        fh = BytesIO()
-        downloader = MediaIoBaseDownload(fh, req)
-        done = False
-        while not done:
-            _, done = downloader.next_chunk()
-        fh.seek(0)
-        content = fh.read()
-        try:
-            text = content.decode("utf-8-sig")
-        except UnicodeDecodeError:
-            text = content.decode("utf-8", errors="replace")
-        return pd.read_csv(StringIO(text))
-    except HttpError as e:
-        # ถ้าไฟล์ว่าง/ไม่มี header อาจต้อง handle เพิ่ม
-        print(f"⚠️ อ่านไฟล์จาก Drive ไม่สำเร็จ: {e}")
-        return None
-    except Exception as e:
-        print(f"⚠️ อ่าน CSV เป็น DataFrame ไม่สำเร็จ: {e}")
-        return None
-
-def drive_merge_and_update_df_update_only(
-    df_new: pd.DataFrame,
-    key_cols: Tuple[str, ...] = ("Province", "DateTime"),
-    keep: str = "last",
-    local_out_path: Optional[str] = None,
-) -> Tuple[str, str, int]:
-    """
-    รวม df_new กับไฟล์เดิมบน Drive (DRIVE_FILE_ID) แล้ว 'update' กลับไฟล์เดิมเท่านั้น
-    - ห้ามสร้างไฟล์ใหม่ -> ถ้าเข้าถึงไฟล์เดิมไม่ได้ ให้ raise error
-    """
-    _check_prereq()
-    service = build_drive_service()
-
-    # ตรวจสิทธิ์/การมีอยู่ของไฟล์เดิมก่อน
-    try:
-        service.files().get(fileId=DRIVE_FILE_ID, fields="id,name").execute()
-    except HttpError as e:
-        raise RuntimeError(f"Service Account ไม่มีสิทธิ์หรือหาไฟล์ไม่พบ (fileId={DRIVE_FILE_ID}): {e}")
-
-    # ดาวน์โหลดไฟล์เดิมมารวม
-    df_old = drive_read_csv_as_df(service, DRIVE_FILE_ID)
-    if df_old is not None and len(df_old) > 0:
-        common_cols = [c for c in df_new.columns if c in df_old.columns]
-        if common_cols:
-            df_merged = pd.concat([df_old[common_cols], df_new[common_cols]], ignore_index=True)
-        else:
-            df_merged = pd.concat([df_old, df_new], ignore_index=True)
-    else:
-        df_merged = df_new.copy()
-
-    # ลบแถวซ้ำตาม key
-    effective_keys = [c for c in key_cols if c in df_merged.columns]
-    if effective_keys:
-        df_merged = df_merged.drop_duplicates(subset=effective_keys, keep=keep)
-    else:
-        df_merged = df_merged.drop_duplicates(keep=keep)
-
-    # บันทึกโลคอล (ออปชัน)
-    if local_out_path:
-        out_dir = os.path.dirname(os.path.abspath(local_out_path))
-        if out_dir:
-            os.makedirs(out_dir, exist_ok=True)
-        df_merged.to_csv(local_out_path, index=False, encoding="utf-8-sig")
-
-    # อัปเดตไฟล์เดิมเท่านั้น
-    buf = BytesIO()
-    csv_bytes = df_merged.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
-    buf.write(csv_bytes)
-    buf.seek(0)
-    media = MediaIoBaseUpload(buf, mimetype=CSV_MIMETYPE, resumable=True)
-
-    updated = service.files().update(
-        fileId=DRIVE_FILE_ID,
-        media_body=media,
-        supportsAllDrives=True,
-    ).execute()
-
-    return "update", updated["id"], len(df_merged)
-
 # ======================================================================
 # SELENIUM HELPERS
 # ======================================================================
 def make_driver() -> webdriver.Chrome:
     opt = Options()
-    opt.add_argument("--headless")
+    opt.add_argument("--headless=new")
     opt.add_argument("--no-sandbox")
     opt.add_argument("--disable-dev-shm-usage")
     opt.add_argument("--window-size=1366,768")
@@ -228,15 +70,11 @@ def open_home_ready(driver) -> None:
     )
 
 def collect_mapping_from_select(driver) -> Dict[str, str]:
-    # พยายามอ่าน <select id="province-selector"> หลายรอบก่อนค่อยยอมแพ้
-    # แก้เคสที่ JS/Lazy-load ทำให้มี options มาไม่ครบในครั้งแรก
     MAX_TRIES = 5
     for attempt in range(1, MAX_TRIES + 1):
         sel = WebDriverWait(driver, WAIT_MED).until(
             EC.presence_of_element_located((By.ID, "province-selector"))
         )
-
-        # กระตุ้นให้ options โผล่ (บางหน้า inject หลังโฟกัส/คลิก)
         try:
             driver.execute_script("arguments[0].focus();", sel)
             driver.execute_script("arguments[0].click();", sel)
@@ -250,26 +88,20 @@ def collect_mapping_from_select(driver) -> Dict[str, str]:
             for op in options:
                 name = (op.text or "").strip()
                 val = (op.get_attribute("value") or "").strip()
-                if not name or not val:
-                    continue
-                if name.startswith("เลือก"):
+                if not name or not val or name.startswith("เลือก"):
                     continue
                 mapping[name] = val
         except StaleElementReferenceException:
             mapping = {}
 
-        # ถ้าอ่านได้เยอะพอแล้วก็คืนค่าเลย
         if len(mapping) >= 10:
             return mapping
 
-        # ยังได้น้อย → รอ/รีเฟรชแล้วลองใหม่
         time.sleep(0.5)
         driver.refresh()
         time.sleep(0.5)
 
-    # ครบทุกความพยายามแล้วยังน้อยอยู่ → คงพฤติกรรมเดิมคือ throw
     raise TimeoutException("อ่านรายชื่อจังหวัดได้น้อยผิดปกติ")
-    return mapping
 
 def _js_set_select_value(driver, value: str) -> bool:
     js = "var s=document.getElementById('province-selector');if(!s)return false;s.value=arguments[0];s.dispatchEvent(new Event('change',{bubbles:true}));return true;"
@@ -366,32 +198,11 @@ def main():
 
     new_df = pd.DataFrame(all_rows)
 
-    action, fid, merged_rows = "-", "-", 0
-    if ENABLE_GOOGLE_DRIVE_UPLOAD and not new_df.empty:
-        try:
-            action, fid, merged_rows = drive_merge_and_update_df_update_only(
-                new_df, key_cols=("Province", "DateTime"), keep="last", local_out_path=CSV_OUT
-            )
-            print(f"\n✅ อัปเดตไฟล์เดิมสำเร็จ (id={fid}), total rows after merge: {merged_rows}")
-        except Exception as e:
-            print("⚠️ Drive update fail:", e)
+    if not new_df.empty:
+        new_df.to_csv(CSV_OUT, index=False, encoding="utf-8-sig")
+        print(f"\n📝 บันทึกข้อมูลลงไฟล์: {CSV_OUT}")
     else:
-        # ไม่อัปโหลด Drive ก็เก็บเฉพาะ local
-        if not new_df.empty:
-            out_dir = os.path.dirname(os.path.abspath(CSV_OUT))
-            if out_dir:
-                os.makedirs(out_dir, exist_ok=True)
-            new_df.to_csv(CSV_OUT, index=False, encoding="utf-8-sig")
-            print(f"\n📝 บันทึกเฉพาะแถวใหม่ลงโลคอล: {CSV_OUT}")
-
-    subject = f"[TMD Scraper] OK={len(all_rows)} FAIL={len(failed)}"
-    body = (
-        f"เพิ่มใหม่ (ก่อน merge): {len(all_rows)} แถว\n"
-        f"รวมแล้วทั้งหมด (หลัง merge): {merged_rows or 0}\n"
-        f"Drive: {action} id={fid}\n"
-        f"Fail: {', '.join(failed) if failed else '-'}"
-    )
-    send_email(subject, body)
+        print("⚠️ ไม่ได้ข้อมูลใหม่")
 
 # ======================================================================
 # INTERNAL: scrape loop
@@ -448,12 +259,4 @@ def _try_scrape_provinces(
 # ENTRY
 # ======================================================================
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        when = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        subject = f"[TMD Scraper] FAILED @ {when}"
-        body = f"สคริปต์ล้มเหลวเมื่อ {when}\n\nError:\n{repr(e)}"
-        send_email(subject, body)
-        raise
-
+    main()
