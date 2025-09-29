@@ -1,0 +1,4 @@
+- name: Check Chrome
+  run: |
+    which google-chrome
+    google-chrome --version
