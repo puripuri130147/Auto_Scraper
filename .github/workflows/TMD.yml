@@ -1,8 +1,8 @@
-name: TMD
+name: TMD Scraper
 
 on:
   schedule:
-    - cron: '0 14 * * *'   # รันทุกวันเวลา 14:00 UTC (21:00 เวลาไทย)
+    - cron: '0 14 * * *' # 14:00 UTC = 21:00 ไทย
   workflow_dispatch:
 
 jobs:
@@ -10,23 +10,19 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1️⃣ Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      # 2️⃣ Set up Python
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
 
-      # 3️⃣ Install Python dependencies
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install pandas selenium
 
-      # 4️⃣ Install Chrome
       - name: Install Chrome
         run: |
           sudo apt update
@@ -34,30 +30,25 @@ jobs:
           wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
           sudo dpkg -i google-chrome-stable_current_amd64.deb || sudo apt -f install -y
 
-      # 5️⃣ Install ChromeDriver (match major version)
       - name: Install ChromeDriver
         run: |
-          CHROME_VERSION=$(google-chrome --version | grep -oP '\d+')
-          echo "Chrome major version: $CHROME_VERSION"
-          LATEST=$(curl -sS https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/$CHROME_VERSION/latest/linux64)
-          wget -O /tmp/chromedriver-linux64.zip https://storage.googleapis.com/chrome-for-testing-public/$CHROME_VERSION/linux64/chromedriver-linux64.zip
-          unzip /tmp/chromedriver-linux64.zip -d $HOME/bin
-          chmod +x $HOME/bin/chromedriver-linux64/chromedriver
-          echo "$HOME/bin/chromedriver-linux64" >> $GITHUB_PATH
+          CHROME_VER=$(google-chrome --version | grep -oP '\d+\.\d+\.\d+')
+          echo "Chrome version: $CHROME_VER"
+          wget -O /tmp/chromedriver.zip "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/$CHROME_VER/linux64/chromedriver-linux64.zip"
+          unzip /tmp/chromedriver.zip -d $HOME/bin
+          chmod +x $HOME/bin/chromedriver
+          echo "$HOME/bin" >> $GITHUB_PATH
 
-      # 6️⃣ Optional: Set timezone Bangkok
       - name: Set timezone to Bangkok
         run: sudo timedatectl set-timezone Asia/Bangkok
 
-      # 7️⃣ Run the scraper
       - name: Run scrap1.py
         run: python scrap1.py
 
-      # 8️⃣ Upload CSV to Google Drive
       - name: Upload tmd_7day_forecast_today.csv to Google Drive
         uses: mathisve/gdrive-upload-action@main
         with:
-          filename: tmd_7day_forecast_today.csv       # path ถ้าอยู่ subfolder ให้แก้เป็น ./folder/tmd_7day_forecast_today.csv
+          filename: ./tmd_7day_forecast_today.csv
           name: tmd_7day_forecast_today.csv
           folderId: ${{ secrets.GOOGLE_ID }}
           credentials: ${{ secrets.SERVICE_ID }}
