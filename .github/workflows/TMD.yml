@@ -2,7 +2,7 @@ name: TMD Scraper
 
 on:
   schedule:
-    - cron: "0 13 * * *"   # รันทุกวัน 20:00 เวลาไทย (13:00 UTC)
+    - cron: "0 13 * * *"   # 20:00 ไทย (13:00 UTC)
   workflow_dispatch:
 
 jobs:
@@ -14,25 +14,32 @@ jobs:
       CSV_OUT: tmd_7day_forecast_today.csv
 
     steps:
+      # 1) Checkout
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # 2) Chrome สำหรับ Selenium (ถ้า scrap1.py ใช้)
       - name: Setup Google Chrome
         uses: browser-actions/setup-chrome@v1
 
+      # 3) Python
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
+      # 4) Dependencies
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install pandas selenium webdriver-manager
+          pip install google-api-python-client google-auth google-auth-httplib2
 
+      # 5) Run scraper
       - name: Run scraper
         run: python scrap1.py
 
+      # 6) Debug ไฟล์ CSV
       - name: List files
         run: ls -lh
       - name: Show CSV head
@@ -40,22 +47,42 @@ jobs:
           test -f "${{ env.CSV_OUT }}" || (echo "CSV not found!" && exit 1)
           head -n 20 "${{ env.CSV_OUT }}"
 
-      - name: Install rclone
+      # 7) เขียนไฟล์ service account จาก secret
+      - name: Write SA JSON
         run: |
-          curl -fsSL https://rclone.org/install.sh | sudo bash
-
-      - name: Configure rclone
-        run: |
-          mkdir -p ~/.config/rclone
           echo '${{ secrets.SERVICE_ID }}' > sa.json
-          cat > ~/.config/rclone/rclone.conf <<EOF
-          [gdrive]
-          type = drive
-          scope = drive.file
-          service_account_file = sa.json
-          EOF
 
-      - name: Overwrite existing CSV in My Drive
+      # 8) อัปเดตไฟล์เดิมใน My Drive ด้วย Drive API (update by fileId)
+      - name: Update existing Drive file by fileId
+        env:
+          TARGET_FILE_ID: ${{ secrets.TARGET_FILE_ID }}
+          CSV_OUT: ${{ env.CSV_OUT }}
         run: |
-          rclone copyto "${{ env.CSV_OUT }}" gdrive: \
-            --drive-file-id ${{ secrets.TARGET_FILE_ID }} --progress
+          python - <<'PY'
+          import os
+          from google.oauth2 import service_account
+          from googleapiclient.discovery import build
+          from googleapiclient.http import MediaFileUpload
+
+          file_id = os.environ["TARGET_FILE_ID"]
+          csv_path = os.environ["CSV_OUT"]
+
+          # สร้าง credentials จาก sa.json
+          SCOPES = ["https://www.googleapis.com/auth/drive.file"]
+          creds = service_account.Credentials.from_service_account_file(
+              "sa.json", scopes=SCOPES
+          )
+
+          # สร้าง Drive service
+          service = build("drive", "v3", credentials=creds, cache_discovery=False)
+
+          # อัปเดตไฟล์เดิม (owner เป็นคุณ, SA เป็น Editor ที่คุณแชร์ให้)
+          media = MediaFileUpload(csv_path, mimetype="text/csv", resumable=False)
+          updated = service.files().update(
+              fileId=file_id,
+              media_body=media,
+              fields="id, name, modifiedTime, size"
+          ).execute()
+
+          print(f"✅ Updated: {updated['name']} | id={updated['id']} | size={updated.get('size')} | modifiedTime={updated['modifiedTime']}")
+          PY
