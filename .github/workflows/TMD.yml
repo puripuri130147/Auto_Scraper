@@ -37,19 +37,13 @@ jobs:
       # 5️⃣ Install ChromeDriver (match major version)
       - name: Install ChromeDriver
         run: |
-          # ดึง major version ของ Chrome
-          CHROME_MAJOR=$(google-chrome --version | awk '{print $3}' | cut -d '.' -f1)
-          echo "Chrome major version: $CHROME_MAJOR"
-
-          # ดึง ChromeDriver ที่ตรงกับ major version
-          CHROMEDRIVER_VERSION=$(curl -s "https://googlechromelabs.github.io/chrome-for-testing/LATEST_RELEASE_$CHROME_MAJOR")
-          echo "ChromeDriver version: $CHROMEDRIVER_VERSION"
-
-          # ดาวน์โหลดและติดตั้ง
-          wget -O /tmp/chromedriver-linux64.zip "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/$CHROMEDRIVER_VERSION/linux64/chromedriver-linux64.zip"
+          CHROME_VERSION=$(google-chrome --version | grep -oP '\d+')
+          echo "Chrome major version: $CHROME_VERSION"
+          LATEST=$(curl -sS https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/$CHROME_VERSION/latest/linux64)
+          wget -O /tmp/chromedriver-linux64.zip https://storage.googleapis.com/chrome-for-testing-public/$CHROME_VERSION/linux64/chromedriver-linux64.zip
           unzip /tmp/chromedriver-linux64.zip -d $HOME/bin
-          chmod +x $HOME/bin/chromedriver
-          echo "$HOME/bin" >> $GITHUB_PATH
+          chmod +x $HOME/bin/chromedriver-linux64/chromedriver
+          echo "$HOME/bin/chromedriver-linux64" >> $GITHUB_PATH
 
       # 6️⃣ Optional: Set timezone Bangkok
       - name: Set timezone to Bangkok
