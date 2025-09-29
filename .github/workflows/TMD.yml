@@ -20,11 +20,12 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install pandas selenium webdriver-manager gdrive-upload-action
+          pip install pandas selenium webdriver-manager
 
       - name: Run TMD scraper
         run: python scrap1.py
 
+      # --- ใช้ GitHub Action ของ gdrive-upload-action แทน ---
       - name: Upload CSV to Google Drive
         uses: mathisve/gdrive-upload-action@main
         with:
