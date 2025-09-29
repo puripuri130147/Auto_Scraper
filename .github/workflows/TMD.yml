@@ -34,22 +34,24 @@ jobs:
           wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
           sudo dpkg -i google-chrome-stable_current_amd64.deb || sudo apt -f install -y
 
-      - name: Check Chrome
-        run: |
-          which google-chrome
-          google-chrome --version
-
-      # 5️⃣ Install ChromeDriver
+      # 5️⃣ Install ChromeDriver (match major version)
       - name: Install ChromeDriver
         run: |
-          CHROME_VERSION=$(google-chrome --version | grep -oP '\d+')
-          LATEST=$(curl -sS chromedriver.storage.googleapis.com/LATEST_RELEASE_$CHROME_VERSION)
-          wget -O /tmp/chromedriver.zip https://chromedriver.storage.googleapis.com/$LATEST/chromedriver_linux64.zip
-          unzip /tmp/chromedriver.zip -d $HOME/bin
+          # ดึง major version ของ Chrome
+          CHROME_MAJOR=$(google-chrome --version | awk '{print $3}' | cut -d '.' -f1)
+          echo "Chrome major version: $CHROME_MAJOR"
+
+          # ดึง ChromeDriver ที่ตรงกับ major version
+          CHROMEDRIVER_VERSION=$(curl -s "https://googlechromelabs.github.io/chrome-for-testing/LATEST_RELEASE_$CHROME_MAJOR")
+          echo "ChromeDriver version: $CHROMEDRIVER_VERSION"
+
+          # ดาวน์โหลดและติดตั้ง
+          wget -O /tmp/chromedriver-linux64.zip "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/$CHROMEDRIVER_VERSION/linux64/chromedriver-linux64.zip"
+          unzip /tmp/chromedriver-linux64.zip -d $HOME/bin
           chmod +x $HOME/bin/chromedriver
           echo "$HOME/bin" >> $GITHUB_PATH
 
-      # 6️⃣ (Optional) Set timezone Bangkok
+      # 6️⃣ Optional: Set timezone Bangkok
       - name: Set timezone to Bangkok
         run: sudo timedatectl set-timezone Asia/Bangkok
 
@@ -61,7 +63,7 @@ jobs:
       - name: Upload tmd_7day_forecast_today.csv to Google Drive
         uses: mathisve/gdrive-upload-action@main
         with:
-          filename: ./tmd_7day_forecast_today.csv     
+          filename: tmd_7day_forecast_today.csv       # path ถ้าอยู่ subfolder ให้แก้เป็น ./folder/tmd_7day_forecast_today.csv
           name: tmd_7day_forecast_today.csv
           folderId: ${{ secrets.GOOGLE_ID }}
           credentials: ${{ secrets.SERVICE_ID }}
