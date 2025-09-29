@@ -2,7 +2,7 @@ name: TMD Scraper
 
 on:
   schedule:
-    - cron: "0 13 * * *"   # รันทุกวัน 20:00 ตามเวลาไทย (13:00 UTC)
+    - cron: "0 13 * * *"   # รันทุกวัน 20:00 เวลาไทย (13:00 UTC)
   workflow_dispatch:
 
 jobs:
@@ -14,31 +14,25 @@ jobs:
       CSV_OUT: tmd_7day_forecast_today.csv
 
     steps:
-      # --- Checkout ---
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # --- Setup Chrome for Selenium ---
       - name: Setup Google Chrome
         uses: browser-actions/setup-chrome@v1
 
-      # --- Setup Python ---
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      # --- Install dependencies ---
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install pandas selenium webdriver-manager
 
-      # --- Run scraper ---
       - name: Run scraper
         run: python scrap1.py
 
-      # --- Debug output ---
       - name: List files
         run: ls -lh
       - name: Show CSV head
@@ -46,12 +40,22 @@ jobs:
           test -f "${{ env.CSV_OUT }}" || (echo "CSV not found!" && exit 1)
           head -n 20 "${{ env.CSV_OUT }}"
 
-      # --- Upload CSV to Google Drive ---
-      - name: Upload CSV to Google Drive
-        uses: mathisve/gdrive-upload-action@main
-        with:
-          filename: ./${{ env.CSV_OUT }}
-          name: tmd_7day_forecast_today.csv
-          folderId: ${{ secrets.GOOGLE_ID }}      # <-- FOLDER_ID ของโฟลเดอร์ที่แชร์
-          credentials: ${{ secrets.SERVICE_ID }}  # <-- เนื้อหา JSON ทั้งก้อน
-          encoded: false
+      - name: Install rclone
+        run: |
+          curl -fsSL https://rclone.org/install.sh | sudo bash
+
+      - name: Configure rclone
+        run: |
+          mkdir -p ~/.config/rclone
+          echo '${{ secrets.SERVICE_ID }}' > sa.json
+          cat > ~/.config/rclone/rclone.conf <<EOF
+          [gdrive]
+          type = drive
+          scope = drive.file
+          service_account_file = sa.json
+          EOF
+
+      - name: Overwrite existing CSV in My Drive
+        run: |
+          rclone copyto "${{ env.CSV_OUT }}" gdrive: \
+            --drive-file-id ${{ secrets.TARGET_FILE_ID }} --progress
