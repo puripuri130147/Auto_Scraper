@@ -30,7 +30,7 @@ jobs:
       - name: Install Chrome
         run: |
           sudo apt update
-          sudo apt install -y wget unzip xvfb libxi6 libgconf-2-4
+          sudo apt install -y wget unzip xvfb libxi6
           wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
           sudo dpkg -i google-chrome-stable_current_amd64.deb || sudo apt -f install -y
 
@@ -56,7 +56,7 @@ jobs:
       - name: Upload tmd_7day_forecast_today.csv to Google Drive
         uses: mathisve/gdrive-upload-action@main
         with:
-          filename: tmd_7day_forecast_today.csv       # path ถ้าอยู่ subfolder ให้แก้เป็น ./folder/tmd_7day_forecast_today.csv
+          filename: ./tmd_7day_forecast_today.csv     
           name: tmd_7day_forecast_today.csv
           folderId: ${{ secrets.GOOGLE_ID }}
           credentials: ${{ secrets.SERVICE_ID }}
