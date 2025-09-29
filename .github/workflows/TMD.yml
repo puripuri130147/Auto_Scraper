@@ -2,36 +2,56 @@ name: TMD Scraper
 
 on:
   schedule:
-    - cron: "0 13 * * *"  # ทุกวัน 20:00 ไทย
+    - cron: "0 13 * * *"   # รันทุกวัน 20:00 ตามเวลาไทย (13:00 UTC)
   workflow_dispatch:
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      TZ: Asia/Bangkok
+      CSV_OUT: tmd_7day_forecast_today.csv
 
     steps:
+      # --- Checkout ---
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
+      # --- Setup Chrome for Selenium ---
+      - name: Setup Google Chrome
+        uses: browser-actions/setup-chrome@v1
+
+      # --- Setup Python ---
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
+      # --- Install dependencies ---
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install pandas selenium webdriver-manager
 
+      # --- Run scraper ---
       - name: Run scraper
         run: python scrap1.py
 
-      # --- ใช้ GitHub Action ของ gdrive-upload-action แทน ---
+      # --- Debug output ---
+      - name: List files
+        run: ls -lh
+      - name: Show CSV head
+        run: |
+          test -f "${{ env.CSV_OUT }}" || (echo "CSV not found!" && exit 1)
+          head -n 20 "${{ env.CSV_OUT }}"
+
+      # --- Upload CSV to Google Drive ---
       - name: Upload CSV to Google Drive
         uses: mathisve/gdrive-upload-action@main
         with:
-          filename: ./tmd_7day_forecast_today.csv
+          filename: ./${{ env.CSV_OUT }}
           name: tmd_7day_forecast_today.csv
-          folderId: ${{ secrets.GOOGLE_ID }}
-          credentials: ${{ secrets.SERVICE_ID }}
+          folderId: ${{ secrets.GOOGLE_ID }}      # <-- FOLDER_ID ของโฟลเดอร์ที่แชร์
+          credentials: ${{ secrets.SERVICE_ID }}  # <-- เนื้อหา JSON ทั้งก้อน
           encoded: false
