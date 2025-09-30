@@ -18,7 +18,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2) Chrome สำหรับ Selenium (ถ้า scrap1.py ใช้)
+      # 2) Chrome สำหรับ Selenium
       - name: Setup Google Chrome
         uses: browser-actions/setup-chrome@v1
 
@@ -52,7 +52,7 @@ jobs:
         run: |
           echo '${{ secrets.SERVICE_ID }}' > sa.json
 
-      # 8) อัปเดตไฟล์เดิมใน My Drive ด้วย Drive API (update by fileId)
+      # 8) Append + merge แล้วอัปเดตไฟล์เดิมบน Drive (รักษา DateTime เดิม)
       - name: Append-merge CSV into existing Drive file
         env:
           TMD_FILE_ID: ${{ secrets.TMD_FILE_ID }}
@@ -65,31 +65,30 @@ jobs:
           from googleapiclient.discovery import build
           from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
           from googleapiclient.errors import HttpError
-      
+
           file_id = os.environ.get("TMD_FILE_ID", "").strip()
           csv_path = os.environ.get("CSV_OUT", "tmd_7day_forecast_today.csv")
-      
+
           if not file_id:
             print("❌ TMD_FILE_ID is empty or missing."); sys.exit(2)
           if not os.path.exists(csv_path):
             print(f"❌ CSV not found: {csv_path}"); sys.exit(2)
-      
-          # ใช้ scope แบบกว้างเพื่อเลี่ยง policy บางองค์กร
+
           SCOPES = ["https://www.googleapis.com/auth/drive"]
           creds = service_account.Credentials.from_service_account_file("sa.json", scopes=SCOPES)
           drive = build("drive", "v3", credentials=creds, cache_discovery=False)
-      
+
           # 1) ตรวจการเข้าถึงไฟล์ปลายทาง
           try:
             meta = drive.files().get(fileId=file_id, fields="id,name,mimeType,owners(emailAddress)").execute()
             print(f"✅ Access OK: {meta['name']} ({meta['id']}) | owner={meta['owners'][0]['emailAddress']}")
             if meta["mimeType"].startswith("application/vnd.google-apps"):
-              print("❌ Target is a Google Doc/Sheet. This step supports only CSV binary files.", file=sys.stderr)
+              print("❌ Target is a Google Doc/Sheet. Only CSV files are supported.", file=sys.stderr)
               sys.exit(3)
           except HttpError as e:
             print(f"❌ Cannot access fileId={file_id}. Detail: {e}"); sys.exit(3)
-      
-          # 2) โหลดไฟล์เดิม (ถ้าอ่าน encoding ปกติไม่ได้ จะลอง utf-8-sig)
+
+          # 2) โหลดไฟล์เดิม
           old_df = pd.DataFrame()
           try:
             buf = io.BytesIO()
@@ -106,36 +105,34 @@ jobs:
               old_df = pd.read_csv(buf, encoding="utf-8-sig")
             print(f"ℹ️ Loaded existing rows: {len(old_df)}")
           except HttpError as e:
-            # ถ้าดาวน์โหลดไม่ได้ (เช่นไฟล์ว่างเพิ่งสร้าง) จะถือว่าเก่าเป็นค่าว่าง
             print(f"⚠️ Could not download existing CSV, assume empty. Detail: {e}")
-      
-          # 3) โหลดข้อมูลใหม่จากรอบนี้
+
+          # 3) โหลดข้อมูลใหม่
           try:
             new_df = pd.read_csv(csv_path)
             print(f"ℹ️ New rows: {len(new_df)}")
           except Exception as e:
             print(f"❌ Failed to read local CSV: {e}"); sys.exit(2)
-      
-          # 4) รวม + ลบซ้ำอย่างปลอดภัย
+
+          # 4) รวม + ลบซ้ำ (รักษา DateTime เป็น string)
           merged = pd.concat([old_df, new_df], ignore_index=True)
-      
-          # ถ้ามีคีย์ Province + DateTime ให้ใช้เป็น unique key
+
+          if "DateTime" in merged.columns:
+            merged["DateTime"] = merged["DateTime"].astype(str)
+
           if {"Province", "DateTime"}.issubset(merged.columns):
             merged.drop_duplicates(subset=["Province", "DateTime"], keep="last", inplace=True)
-            # จัดเรียงเวลาถ้าพาร์สได้
-            try:
-              merged["DateTime"] = pd.to_datetime(merged["DateTime"], errors="coerce")
-              merged.sort_values("DateTime", inplace=True)
-            except Exception:
-              pass
+            # จัดเรียงด้วยคอลัมน์ช่วย (ไม่แตะค่า DateTime เดิม)
+            sort_key = pd.to_datetime(merged["DateTime"], errors="coerce")
+            merged = merged.assign(__sort_dt=sort_key).sort_values(["Province","__sort_dt"]).drop(columns="__sort_dt")
           else:
             merged.drop_duplicates(keep="last", inplace=True)
-      
+
           tmp_path = "__merged_out.csv"
           merged.to_csv(tmp_path, index=False, encoding="utf-8-sig")
           print(f"📝 Merged rows total: {len(merged)}")
-      
-          # 5) อัปเดตทับไฟล์เดิมด้วยเนื้อหา merged
+
+          # 5) อัปเดตทับไฟล์เดิม
           try:
             media = MediaFileUpload(tmp_path, mimetype="text/csv", resumable=False)
             updated = drive.files().update(
