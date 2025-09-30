@@ -55,7 +55,7 @@ jobs:
       # 8) อัปเดตไฟล์เดิมใน My Drive ด้วย Drive API (update by fileId)
       - name: Update existing Drive file by fileId
         env:
-          TMD_FILE_ID: ${{ secrets.TMD_FILE_ID }}   # <-- ใช้ชื่อตาม Secret ของคุณ
+          TMD_FILE_ID: ${{ secrets.TMD_FILE_ID }}
           CSV_OUT: ${{ env.CSV_OUT }}
         run: |
           python - <<'PY'
@@ -69,35 +69,36 @@ jobs:
           csv_path = os.environ.get("CSV_OUT", "tmd_7day_forecast_today.csv")
       
           if not file_id:
-              print("❌ TMD_FILE_ID is empty or missing.")
-              sys.exit(2)
+            print("❌ TMD_FILE_ID is empty or missing.")
+            sys.exit(2)
           if not os.path.exists(csv_path):
-              print(f"❌ CSV not found: {csv_path}")
-              sys.exit(2)
+            print(f"❌ CSV not found: {csv_path}")
+            sys.exit(2)
       
-          SCOPES = ["https://www.googleapis.com/auth/drive.file"]
+          SCOPES = ["https://www.googleapis.com/auth/drive"]
           creds = service_account.Credentials.from_service_account_file("sa.json", scopes=SCOPES)
           service = build("drive", "v3", credentials=creds, cache_discovery=False)
       
-          # ตรวจสิทธิ์ก่อน
           try:
-              meta = service.files().get(fileId=file_id, fields="id,name,owners(emailAddress)").execute()
-              print(f"✅ Found file: {meta['name']} ({meta['id']}) | owner={meta['owners'][0]['emailAddress']}")
+            meta = service.files().get(
+              fileId=file_id,
+              fields="id,name,owners(emailAddress)"
+            ).execute()
+            print(f"✅ Access OK: {meta['name']} ({meta['id']}) | owner={meta['owners'][0]['emailAddress']}")
           except HttpError as e:
-              print(f"❌ Cannot access fileId={file_id}. Wrong ID or SA lacks permission. Detail: {e}")
-              sys.exit(3)
+            print(f"❌ Cannot access fileId={file_id}. Detail: {e}")
+            sys.exit(3)
       
-          # อัปเดตไฟล์เดิม
           try:
-              media = MediaFileUpload(csv_path, mimetype="text/csv", resumable=False)
-              updated = service.files().update(
-                  fileId=file_id,
-                  media_body=media,
-                  fields="id,name,modifiedTime,size"
-              ).execute()
-              print(f"✅ Updated: {updated['name']} | id={updated['id']} | size={updated.get('size')} | modifiedTime={updated['modifiedTime']}")
+            media = MediaFileUpload(csv_path, mimetype="text/csv", resumable=False)
+            updated = service.files().update(
+              fileId=file_id,
+              media_body=media,
+              fields="id,name,modifiedTime,size"
+            ).execute()
+            print(f"✅ Updated: {updated['name']} | size={updated.get('size')} | modifiedTime={updated['modifiedTime']}")
           except HttpError as e:
-              print(f"❌ Update failed: {e}")
-              sys.exit(4)
+            print(f"❌ Update failed: {e}")
+            sys.exit(4)
           PY
 
