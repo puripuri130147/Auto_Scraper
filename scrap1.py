@@ -337,8 +337,13 @@ def main():
     new_df = pd.DataFrame(all_rows)
 
     if not new_df.empty:
+        # เรียงตาม DateTime โดยไม่แก้ค่าเดิม (ใช้คอลัมน์ช่วย __dt)
+        if "DateTime" in new_df.columns:
+            sort_key = pd.to_datetime(new_df["DateTime"], errors="coerce")
+            new_df = new_df.assign(__dt=sort_key).sort_values("__dt").drop(columns="__dt")
+
         new_df.to_csv(CSV_OUT, index=False, encoding="utf-8-sig")
-        print(f"\n📝 บันทึกข้อมูลลงไฟล์: {CSV_OUT} | rows={len(new_df)}")
+        print(f"\n📝 บันทึกข้อมูลลงไฟล์: {CSV_OUT} | rows={len(new_df)} (เรียงตาม DateTime แล้ว)")
     else:
         print("⚠️ ไม่ได้ข้อมูลใหม่")
 
