@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-import os, re, time, random
+import os, re, time, random, pathlib
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
+from contextlib import contextmanager
 
 import pandas as pd
 
@@ -14,7 +15,6 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, StaleElementReferenceException
-from contextlib import contextmanager
 
 # ======================================================================
 # CONFIG
@@ -37,7 +37,60 @@ PAGE_LOAD_STRATEGY: str = os.getenv("PAGE_LOAD_STRATEGY", "none")
 RE_INT = re.compile(r"(\d+)")
 
 # ======================================================================
-# ROBUST HELPERS: หา <select> ได้แม้ย้ายไปอยู่ใน iframe
+# DEBUG UTILS
+# ======================================================================
+def _ensure_outdir(p="debug_artifacts"):
+    d = pathlib.Path(p)
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+def dump_dom_debug(driver, tag="debug"):
+    out = _ensure_outdir()
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    html_path = out / f"{ts}_{tag}.html"
+    png_path  = out / f"{ts}_{tag}.png"
+    try:
+        with open(html_path, "w", encoding="utf-8") as f:
+            f.write(driver.page_source)
+        driver.save_screenshot(str(png_path))
+        print(f"💾 Saved debug: {html_path.name}, {png_path.name}")
+    except Exception as e:
+        print("⚠️ dump_dom_debug failed:", e)
+
+def list_iframes_recursive(driver, max_depth=4, _depth=0, _acc=None):
+    if _acc is None: _acc = []
+    if _depth > max_depth: return _acc
+    try:
+        frames = driver.find_elements(By.TAG_NAME, "iframe")
+    except Exception:
+        frames = []
+    for idx, fr in enumerate(frames, 1):
+        info = {
+            "depth": _depth,
+            "index": idx,
+            "name": fr.get_attribute("name"),
+            "id": fr.get_attribute("id"),
+            "src": fr.get_attribute("src"),
+        }
+        _acc.append(info)
+        try:
+            driver.switch_to.frame(fr)
+            list_iframes_recursive(driver, max_depth, _depth+1, _acc)
+        except Exception:
+            pass
+        finally:
+            driver.switch_to.default_content()
+    return _acc
+
+def log_iframes(driver, tag="iframes"):
+    items = list_iframes_recursive(driver, max_depth=4)
+    print(f"🔎 Found {len(items)} iframe(s) total:")
+    for it in items:
+        pad = "  " * it["depth"]
+        print(f"{pad}- depth={it['depth']} idx={it['index']} id={it['id']} name={it['name']} src={it['src']}")
+
+# ======================================================================
+# ROBUST HELPERS: หา <select> ได้แม้ย้ายไปอยู่ใน iframe/combobox
 # ======================================================================
 @contextmanager
 def _default_content(driver):
@@ -50,40 +103,90 @@ def _default_content(driver):
         except Exception:
             pass
 
+def wait_ui_idle():
+    time.sleep(0.6)
+
+def _click_if_present(driver, by, sel):
+    try:
+        el = driver.find_element(by, sel)
+        driver.execute_script("arguments[0].click();", el)
+        return True
+    except Exception:
+        return False
+
+def try_dismiss_banners(driver):
+    # เผื่อข้อความปุ่มคุกกี้/ยอมรับที่พบบ่อย
+    texts = ["ยอมรับ", "ตกลง", "รับทราบ", "ปิด", "Accept", "I agree", "Got it"]
+    for t in texts:
+        x = f"//*[self::button or self::a or @role='button'][contains(., '{t}')]"
+        try:
+            btns = driver.find_elements(By.XPATH, x)
+            for b in btns[:3]:
+                try:
+                    driver.execute_script("arguments[0].scrollIntoView({block:'center'});", b)
+                    time.sleep(0.1)
+                    driver.execute_script("arguments[0].click();", b)
+                    time.sleep(0.2)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
 def _try_find_select_in_context(driver):
+    # 1) หา <select> จริงก่อน
     CANDS = [
         (By.ID, "province-selector"),
         (By.CSS_SELECTOR, "select#province-selector"),
-        (By.CSS_SELECTOR, "select[name*='province']"),
-        (By.XPATH, "//select[contains(@id,'province') or contains(@name,'province')]"),
+        (By.CSS_SELECTOR, "select[name*='province' i]"),
+        (By.XPATH, "//select[contains(translate(@id,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'province') or "
+                   "contains(translate(@name,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'province')]"),
     ]
     for how, what in CANDS:
         try:
-            return WebDriverWait(driver, 8).until(EC.presence_of_element_located((how, what)))
+            return WebDriverWait(driver, 6).until(EC.presence_of_element_located((how, what)))
         except Exception:
             pass
+
+    # 2) เผื่อเป็น combobox (ไม่ใช่ <select>)
+    CANDS_COMBO = [
+        (By.XPATH, "//*[@role='combobox' and (contains(@aria-label,'จังหวัด') or contains(.,'จังหวัด'))]"),
+        (By.XPATH, "//*[contains(@class,'select') and (contains(@aria-label,'จังหวัด') or contains(.,'จังหวัด'))]"),
+    ]
+    for how, what in CANDS_COMBO:
+        try:
+            el = WebDriverWait(driver, 3).until(EC.presence_of_element_located((how, what)))
+            return el
+        except Exception:
+            pass
+
     return None
 
 def find_province_select(driver):
-    # 1) default content
+    # search default
     with _default_content(driver):
         el = _try_find_select_in_context(driver)
-        if el:
-            return el
-    # 2) ลองทุก iframe
-    with _default_content(driver):
-        iframes = driver.find_elements(By.TAG_NAME, "iframe")
-        for f in iframes:
+        if el: return el
+
+    # DFS ทุก iframe (ลึกสุด 4)
+    def _dfs(depth=0, max_depth=4):
+        if depth > max_depth:
+            return None
+        frames = driver.find_elements(By.TAG_NAME, "iframe")
+        for fr in frames:
             try:
-                driver.switch_to.frame(f)
+                driver.switch_to.frame(fr)
                 el = _try_find_select_in_context(driver)
-                if el:
-                    return el
+                if el: return el
+                deeper = _dfs(depth+1, max_depth)
+                if deeper: return deeper
             except Exception:
                 pass
             finally:
                 driver.switch_to.default_content()
-    return None
+        return None
+
+    with _default_content(driver):
+        return _dfs()
 
 def _scroll_into_view(driver, el):
     try:
@@ -108,7 +211,7 @@ def make_driver() -> webdriver.Chrome:
                      "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
     opt.page_load_strategy = PAGE_LOAD_STRATEGY
 
-    drv = webdriver.Chrome(options=opt)  # Selenium Manager จะจัดการ chromedriver ให้
+    drv = webdriver.Chrome(options=opt)  # Selenium Manager จะจัดการ chromedriver
     drv.set_page_load_timeout(PAGELOAD_TIMEOUT)
     drv.set_script_timeout(SCRIPT_TIMEOUT)
     return drv
@@ -125,18 +228,20 @@ def safe_get(driver, url, timeout=PAGELOAD_TIMEOUT):
 
 def open_home_ready(driver) -> None:
     safe_get(driver, HOME, timeout=WAIT_MED)
+    wait_ui_idle()
+    try_dismiss_banners(driver)
+
     el = find_province_select(driver)
     if not el:
         for _ in range(2):
-            driver.refresh(); time.sleep(1.0)
+            driver.refresh(); wait_ui_idle(); try_dismiss_banners(driver)
             el = find_province_select(driver)
-            if el:
-                break
+            if el: break
+
     if not el:
-        # บันทึก HTML ไว้ดีบัก
-        with open("page_debug.html", "w", encoding="utf-8") as f:
-            f.write(driver.page_source)
-        raise TimeoutException("ไม่พบตัวเลือกจังหวัดบนหน้าแรก (บันทึก page_debug.html แล้ว)")
+        dump_dom_debug(driver, "no_select")
+        log_iframes(driver)
+        raise TimeoutException("ไม่พบตัวเลือกจังหวัดบนหน้าแรก (เก็บไฟล์ดีบักแล้ว)")
 
 def collect_mapping_from_select(driver) -> Dict[str, str]:
     MAX_TRIES = 6
@@ -146,7 +251,7 @@ def collect_mapping_from_select(driver) -> Dict[str, str]:
             _scroll_into_view(driver, sel)
             try:
                 driver.execute_script("arguments[0].focus();arguments[0].click();", sel)
-                time.sleep(0.2)
+                wait_ui_idle()
             except Exception:
                 pass
 
@@ -165,11 +270,11 @@ def collect_mapping_from_select(driver) -> Dict[str, str]:
             if len(mapping) >= 10:
                 return mapping
 
-        driver.refresh(); time.sleep(1.0)
+        driver.refresh(); wait_ui_idle(); try_dismiss_banners(driver)
 
-    with open("page_debug.html", "w", encoding="utf-8") as f:
-        f.write(driver.page_source)
-    raise TimeoutException("อ่านรายชื่อจังหวัดได้น้อยผิดปกติ (บันทึก page_debug.html แล้ว)")
+    dump_dom_debug(driver, "map_failed")
+    log_iframes(driver)
+    raise TimeoutException("อ่านรายชื่อจังหวัดได้น้อยผิดปกติ (เก็บไฟล์ดีบักแล้ว)")
 
 def _js_set_select_value(driver, sel, value: str) -> bool:
     try:
@@ -337,7 +442,7 @@ def main():
     new_df = pd.DataFrame(all_rows)
 
     if not new_df.empty:
-        # เรียงตาม DateTime โดยไม่แก้ค่าเดิม (ใช้คอลัมน์ช่วย __dt)
+        # เรียงตาม DateTime (ใช้คอลัมน์ช่วย ไม่แก้ค่าเดิม)
         if "DateTime" in new_df.columns:
             sort_key = pd.to_datetime(new_df["DateTime"], errors="coerce")
             new_df = new_df.assign(__dt=sort_key).sort_values("__dt").drop(columns="__dt")
