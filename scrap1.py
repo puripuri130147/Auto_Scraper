@@ -1,12 +1,9 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-import os, re, time, json, random
+import os, re, time, random
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
-from io import BytesIO, StringIO
-from contextlib import contextmanager
-
 
 import pandas as pd
 
@@ -17,27 +14,13 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, StaleElementReferenceException
-
-# -------- Google Drive API (Service Account) --------
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
-from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
+from contextlib import contextmanager
 
 # ======================================================================
 # CONFIG
 # ======================================================================
 HOME: str = os.getenv("TMD_HOME", "https://www.tmd.go.th")
 CSV_OUT: str = os.getenv("CSV_OUT", "tmd_7day_forecast_today.csv")
-
-# เปิด/ปิดอัปโหลดขึ้น Google Drive
-ENABLE_GOOGLE_DRIVE_UPLOAD: bool = os.getenv("ENABLE_GOOGLE_DRIVE_UPLOAD", "false").lower() == "true"
-# ใส่เนื้อหา SA JSON ผ่าน ENV (แนะนำให้มาจาก GitHub Secret)
-SERVICE_ACCOUNT_JSON: Optional[str] = os.getenv("SERVICE_ACCOUNT_JSON")
-# ใช้ fileId ของไฟล์ปลายทางจาก ENV/Secret (ห้ามฮาร์ดโค้ด)
-DRIVE_FILE_ID: Optional[str] = os.getenv("TMD_FILE_ID")
-
-CSV_MIMETYPE: str = "text/csv"
 
 PAGELOAD_TIMEOUT: int = int(os.getenv("PAGELOAD_TIMEOUT", "50"))
 SCRIPT_TIMEOUT: int = int(os.getenv("SCRIPT_TIMEOUT", "50"))
@@ -53,137 +36,64 @@ SLEEP_MAX = float(os.getenv("SLEEP_MAX", "1.2"))
 PAGE_LOAD_STRATEGY: str = os.getenv("PAGE_LOAD_STRATEGY", "none")
 RE_INT = re.compile(r"(\d+)")
 
-# ================= Email Notify (ปิดเป็นค่าเริ่มต้น) =================
-EMAIL_ENABLED: bool = os.getenv("EMAIL_ENABLED", "false").lower() == "true"
-SMTP_SERVER: str = os.getenv("SMTP_SERVER", "smtp.gmail.com")
-SMTP_PORT: int = int(os.getenv("SMTP_PORT", "587"))
-EMAIL_SENDER: str = os.getenv("EMAIL_SENDER", "")
-EMAIL_PASSWORD: str = os.getenv("EMAIL_PASSWORD", "")
-EMAIL_TO: str = os.getenv("EMAIL_TO", "")
-
-def send_email(subject: str, body_text: str) -> None:
-    if not EMAIL_ENABLED:
-        return
-    try:
-        from email.mime.text import MIMEText
-        from email.mime.multipart import MIMEMultipart
-        import smtplib
-
-        msg = MIMEMultipart()
-        msg["From"] = EMAIL_SENDER
-        msg["To"] = EMAIL_TO
-        msg["Subject"] = subject
-        msg.attach(MIMEText(body_text, "plain", "utf-8"))
-
-        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
-        server.starttls()
-        server.login(EMAIL_SENDER, EMAIL_PASSWORD)
-        server.sendmail(EMAIL_SENDER, [x.strip() for x in EMAIL_TO.split(",") if x.strip()], msg.as_string())
-        server.quit()
-        print("📧 ส่งอีเมลแจ้งเตือนแล้ว")
-    except Exception as e:
-        print("⚠️ ส่งอีเมลล้มเหลว:", e)
-
 # ======================================================================
-# GOOGLE DRIVE HELPERS (Append/Merge แล้วอัปเดตไฟล์เดิม)
+# ROBUST HELPERS: หา <select> ได้แม้ย้ายไปอยู่ใน iframe
 # ======================================================================
-def _check_prereq() -> None:
-    if not ENABLE_GOOGLE_DRIVE_UPLOAD:
-        return
-    if not SERVICE_ACCOUNT_JSON:
-        raise FileNotFoundError("ไม่พบ Service Account JSON ใน ENV: SERVICE_ACCOUNT_JSON")
-    if not DRIVE_FILE_ID:
-        raise RuntimeError("ต้องตั้ง TMD_FILE_ID (fileId ของไฟล์ปลายทางบน Google Drive)")
-
-def build_drive_service():
-    scopes = ["https://www.googleapis.com/auth/drive"]
-    creds = service_account.Credentials.from_service_account_info(
-        json.loads(SERVICE_ACCOUNT_JSON), scopes=scopes
-    )
-    return build("drive", "v3", credentials=creds, cache_discovery=False)
-
-def drive_read_csv_as_df(service, file_id: str) -> Optional[pd.DataFrame]:
+@contextmanager
+def _default_content(driver):
     try:
-        req = service.files().get_media(fileId=file_id)
-        fh = BytesIO()
-        downloader = MediaIoBaseDownload(fh, req)
-        done = False
-        while not done:
-            _, done = downloader.next_chunk()
-        fh.seek(0)
-        content = fh.read()
+        driver.switch_to.default_content()
+        yield
+    finally:
         try:
-            text = content.decode("utf-8-sig")
-        except UnicodeDecodeError:
-            text = content.decode("utf-8", errors="replace")
-        return pd.read_csv(StringIO(text))
-    except HttpError as e:
-        print(f"⚠️ อ่านไฟล์จาก Drive ไม่สำเร็จ: {e}")
-        return None
-    except Exception as e:
-        print(f"⚠️ อ่าน CSV เป็น DataFrame ไม่สำเร็จ: {e}")
-        return None
+            driver.switch_to.default_content()
+        except Exception:
+            pass
 
-def drive_merge_and_update_df_update_only(
-    df_new: pd.DataFrame,
-    key_cols: Tuple[str, ...] = ("Province", "DateTime"),
-    keep: str = "last",
-    local_out_path: Optional[str] = None,
-) -> Tuple[str, str, int]:
-    _check_prereq()
-    service = build_drive_service()
+def _try_find_select_in_context(driver):
+    CANDS = [
+        (By.ID, "province-selector"),
+        (By.CSS_SELECTOR, "select#province-selector"),
+        (By.CSS_SELECTOR, "select[name*='province']"),
+        (By.XPATH, "//select[contains(@id,'province') or contains(@name,'province')]"),
+    ]
+    for how, what in CANDS:
+        try:
+            return WebDriverWait(driver, 8).until(EC.presence_of_element_located((how, what)))
+        except Exception:
+            pass
+    return None
 
-    # ตรวจไฟล์เดิม
-    service.files().get(fileId=DRIVE_FILE_ID, fields="id,name,mimeType").execute()
+def find_province_select(driver):
+    # 1) default content
+    with _default_content(driver):
+        el = _try_find_select_in_context(driver)
+        if el:
+            return el
+    # 2) ลองทุก iframe
+    with _default_content(driver):
+        iframes = driver.find_elements(By.TAG_NAME, "iframe")
+        for f in iframes:
+            try:
+                driver.switch_to.frame(f)
+                el = _try_find_select_in_context(driver)
+                if el:
+                    return el
+            except Exception:
+                pass
+            finally:
+                driver.switch_to.default_content()
+    return None
 
-    # โหลดไฟล์เดิม
-    df_old = drive_read_csv_as_df(service, DRIVE_FILE_ID)
-    if df_old is not None and len(df_old) > 0:
-        common = [c for c in df_new.columns if c in df_old.columns]
-        df_merged = (pd.concat([df_old[common], df_new[common]], ignore_index=True)
-                     if common else pd.concat([df_old, df_new], ignore_index=True))
-    else:
-        df_merged = df_new.copy()
-
-    # ทำให้ DateTime เป็นสตริงเสมอ (กันโดนพาร์สเพี้ยน)
-    if "DateTime" in df_merged.columns:
-        df_merged["DateTime"] = df_merged["DateTime"].astype(str)
-
-    # ลบซ้ำตาม key โดยไม่แตะค่า DateTime เดิม
-    effective_keys = [c for c in key_cols if c in df_merged.columns]
-    if effective_keys:
-        df_merged = df_merged.drop_duplicates(subset=effective_keys, keep=keep)
-
-        # sort ด้วยคอลัมน์ช่วย แล้วลบทิ้ง
-        if "DateTime" in df_merged.columns:
-            sort_key = pd.to_datetime(df_merged["DateTime"], errors="coerce")
-            df_merged = df_merged.assign(__sort_dt=sort_key).sort_values("__sort_dt").drop(columns="__sort_dt")
-    else:
-        df_merged = df_merged.drop_duplicates(keep=keep)
-
-    # (ออปชัน) เขียนไฟล์โลคัล
-    if local_out_path:
-        df_merged.to_csv(local_out_path, index=False, encoding="utf-8-sig")
-
-    # อัปเดตกลับไปที่ไฟล์เดิม (update only)
-    from io import BytesIO
-    from googleapiclient.http import MediaIoBaseUpload
-
-    buf = BytesIO()
-    buf.write(df_merged.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig"))
-    buf.seek(0)
-    media = MediaIoBaseUpload(buf, mimetype=CSV_MIMETYPE, resumable=True)
-
-    updated = service.files().update(
-        fileId=DRIVE_FILE_ID,
-        media_body=media,
-        supportsAllDrives=True,
-    ).execute()
-
-    return "update", updated["id"], len(df_merged)
+def _scroll_into_view(driver, el):
+    try:
+        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
+        time.sleep(0.2)
+    except Exception:
+        pass
 
 # ======================================================================
-# SELENIUM HELPERS
+# SELENIUM BOOTSTRAP
 # ======================================================================
 def make_driver() -> webdriver.Chrome:
     opt = Options()
@@ -191,13 +101,14 @@ def make_driver() -> webdriver.Chrome:
     opt.add_argument("--no-sandbox")
     opt.add_argument("--disable-dev-shm-usage")
     opt.add_argument("--window-size=1920,1080")
-    # เสริมความเสถียร
+    # เพิ่มความเสถียรบน CI
     opt.add_argument("--lang=th-TH")
     opt.add_argument("--disable-blink-features=AutomationControlled")
     opt.add_argument("--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                      "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
     opt.page_load_strategy = PAGE_LOAD_STRATEGY
-    drv = webdriver.Chrome(options=opt)   # Selenium Manager จะจัดการ chromedriver
+
+    drv = webdriver.Chrome(options=opt)  # Selenium Manager จะจัดการ chromedriver ให้
     drv.set_page_load_timeout(PAGELOAD_TIMEOUT)
     drv.set_script_timeout(SCRIPT_TIMEOUT)
     return drv
@@ -214,17 +125,25 @@ def safe_get(driver, url, timeout=PAGELOAD_TIMEOUT):
 
 def open_home_ready(driver) -> None:
     safe_get(driver, HOME, timeout=WAIT_MED)
-    WebDriverWait(driver, WAIT_LONG).until(
-        EC.presence_of_element_located((By.ID, "province-selector"))
-    )
+    el = find_province_select(driver)
+    if not el:
+        for _ in range(2):
+            driver.refresh(); time.sleep(1.0)
+            el = find_province_select(driver)
+            if el:
+                break
+    if not el:
+        # บันทึก HTML ไว้ดีบัก
+        with open("page_debug.html", "w", encoding="utf-8") as f:
+            f.write(driver.page_source)
+        raise TimeoutException("ไม่พบตัวเลือกจังหวัดบนหน้าแรก (บันทึก page_debug.html แล้ว)")
 
 def collect_mapping_from_select(driver) -> Dict[str, str]:
-    MAX_TRIES = 5
+    MAX_TRIES = 6
     for _ in range(MAX_TRIES):
-        try:
-            sel = WebDriverWait(driver, WAIT_MED).until(
-                EC.presence_of_element_located((By.ID, "province-selector"))
-            )
+        sel = find_province_select(driver)
+        if sel:
+            _scroll_into_view(driver, sel)
             try:
                 driver.execute_script("arguments[0].focus();arguments[0].click();", sel)
                 time.sleep(0.2)
@@ -232,37 +151,64 @@ def collect_mapping_from_select(driver) -> Dict[str, str]:
                 pass
 
             mapping: Dict[str, str] = {}
-            for op in sel.find_elements(By.TAG_NAME, "option"):
-                name = (op.text or "").strip()
-                val = (op.get_attribute("value") or "").strip()
-                if not name or not val or name.startswith("เลือก"):
-                    continue
-                mapping[name] = val
+            try:
+                options = sel.find_elements(By.TAG_NAME, "option")
+                for op in options:
+                    name = (op.text or "").strip()
+                    val  = (op.get_attribute("value") or "").strip()
+                    if not name or not val or name.startswith("เลือก"):
+                        continue
+                    mapping[name] = val
+            except StaleElementReferenceException:
+                mapping = {}
 
             if len(mapping) >= 10:
                 return mapping
-        except Exception:
-            pass
-        driver.refresh(); time.sleep(0.5)
-    raise TimeoutException("อ่านรายชื่อจังหวัดได้น้อยผิดปกติ")
 
-def _js_set_select_value(driver, value: str) -> bool:
-    js = """
-    var s=document.getElementById('province-selector');
-    if(!s) return false;
-    s.value=arguments[0];
-    s.dispatchEvent(new Event('change',{bubbles:true}));
-    return true;
-    """
-    return bool(driver.execute_script(js, value))
+        driver.refresh(); time.sleep(1.0)
+
+    with open("page_debug.html", "w", encoding="utf-8") as f:
+        f.write(driver.page_source)
+    raise TimeoutException("อ่านรายชื่อจังหวัดได้น้อยผิดปกติ (บันทึก page_debug.html แล้ว)")
+
+def _js_set_select_value(driver, sel, value: str) -> bool:
+    try:
+        driver.execute_script("""
+            const s = arguments[0], v = arguments[1];
+            s.value = v;
+            s.dispatchEvent(new Event('input', {bubbles:true}));
+            s.dispatchEvent(new Event('change', {bubbles:true}));
+        """, sel, value)
+        return True
+    except Exception:
+        return False
 
 def select_province(driver, province_name: str, mapping: Dict[str, str]) -> bool:
     val = mapping.get(province_name, "")
     if not val:
         return False
-    ok = _js_set_select_value(driver, val)
-    if ok: time.sleep(0.2)
-    return ok
+
+    sel = find_province_select(driver)
+    if not sel:
+        return False
+
+    _scroll_into_view(driver, sel)
+
+    # 1) วิธีปกติ
+    try:
+        from selenium.webdriver.support.ui import Select
+        Select(sel).select_by_value(val)
+        time.sleep(0.6)
+        return True
+    except Exception:
+        pass
+
+    # 2) สำรองด้วย JS
+    if _js_set_select_value(driver, sel, val):
+        time.sleep(0.6)
+        return True
+
+    return False
 
 def wait_rain_info(driver):
     WebDriverWait(driver, WAIT_MED).until(
@@ -390,39 +336,14 @@ def main():
 
     new_df = pd.DataFrame(all_rows)
 
-    action, fid, merged_rows = "-", "-", 0
-    if ENABLE_GOOGLE_DRIVE_UPLOAD and not new_df.empty:
-        try:
-            action, fid, merged_rows = drive_merge_and_update_df_update_only(
-                new_df, key_cols=("Province", "DateTime"), keep="last", local_out_path=CSV_OUT
-            )
-            print(f"\n✅ อัปเดตไฟล์เดิมสำเร็จ (id={fid}), total rows after merge: {merged_rows}")
-        except Exception as e:
-            print("⚠️ Drive update fail:", e)
+    if not new_df.empty:
+        new_df.to_csv(CSV_OUT, index=False, encoding="utf-8-sig")
+        print(f"\n📝 บันทึกข้อมูลลงไฟล์: {CSV_OUT} | rows={len(new_df)}")
     else:
-        if not new_df.empty:
-            new_df.to_csv(CSV_OUT, index=False, encoding="utf-8-sig")
-            print(f"\n📝 บันทึกเฉพาะแถวใหม่ลงโลคอล: {CSV_OUT}")
-
-    subject = f"[TMD Scraper] OK={len(all_rows)} FAIL={len(failed)}"
-    body = (
-        f"เพิ่มใหม่ (ก่อน merge): {len(all_rows)} แถว\n"
-        f"รวมแล้วทั้งหมด (หลัง merge): {merged_rows or 0}\n"
-        f"Drive: {action} id={fid}\n"
-        f"Fail: {', '.join(failed) if failed else '-'}"
-    )
-    send_email(subject, body)
+        print("⚠️ ไม่ได้ข้อมูลใหม่")
 
 # ======================================================================
 # ENTRY
 # ======================================================================
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        when = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        subject = f"[TMD Scraper] FAILED @ {when}"
-        body = f"สคริปต์ล้มเหลวเมื่อ {when}\n\nError:\n{repr(e)}"
-        send_email(subject, body)
-        raise
-
+    main()
