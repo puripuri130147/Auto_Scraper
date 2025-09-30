@@ -5,6 +5,8 @@ import os, re, time, json, random
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 from io import BytesIO, StringIO
+from contextlib import contextmanager
+
 
 import pandas as pd
 
@@ -188,9 +190,14 @@ def make_driver() -> webdriver.Chrome:
     opt.add_argument("--headless=new")
     opt.add_argument("--no-sandbox")
     opt.add_argument("--disable-dev-shm-usage")
-    opt.add_argument("--window-size=1366,768")
+    opt.add_argument("--window-size=1920,1080")
+    # เสริมความเสถียร
+    opt.add_argument("--lang=th-TH")
+    opt.add_argument("--disable-blink-features=AutomationControlled")
+    opt.add_argument("--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                     "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
     opt.page_load_strategy = PAGE_LOAD_STRATEGY
-    drv = webdriver.Chrome(options=opt)   # Selenium Manager จะจัดการ chromedriver ให้อัตโนมัติ
+    drv = webdriver.Chrome(options=opt)   # Selenium Manager จะจัดการ chromedriver
     drv.set_page_load_timeout(PAGELOAD_TIMEOUT)
     drv.set_script_timeout(SCRIPT_TIMEOUT)
     return drv
@@ -418,3 +425,4 @@ if __name__ == "__main__":
         body = f"สคริปต์ล้มเหลวเมื่อ {when}\n\nError:\n{repr(e)}"
         send_email(subject, body)
         raise
+
