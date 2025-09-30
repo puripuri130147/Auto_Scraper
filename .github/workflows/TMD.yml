@@ -53,52 +53,97 @@ jobs:
           echo '${{ secrets.SERVICE_ID }}' > sa.json
 
       # 8) อัปเดตไฟล์เดิมใน My Drive ด้วย Drive API (update by fileId)
-      - name: Update existing Drive file by fileId
+      - name: Append-merge CSV into existing Drive file
         env:
           TMD_FILE_ID: ${{ secrets.TMD_FILE_ID }}
           CSV_OUT: ${{ env.CSV_OUT }}
         run: |
           python - <<'PY'
-          import os, sys
+          import os, sys, io
+          import pandas as pd
           from google.oauth2 import service_account
           from googleapiclient.discovery import build
-          from googleapiclient.http import MediaFileUpload
+          from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
           from googleapiclient.errors import HttpError
       
           file_id = os.environ.get("TMD_FILE_ID", "").strip()
           csv_path = os.environ.get("CSV_OUT", "tmd_7day_forecast_today.csv")
       
           if not file_id:
-            print("❌ TMD_FILE_ID is empty or missing.")
-            sys.exit(2)
+            print("❌ TMD_FILE_ID is empty or missing."); sys.exit(2)
           if not os.path.exists(csv_path):
-            print(f"❌ CSV not found: {csv_path}")
-            sys.exit(2)
+            print(f"❌ CSV not found: {csv_path}"); sys.exit(2)
       
+          # ใช้ scope แบบกว้างเพื่อเลี่ยง policy บางองค์กร
           SCOPES = ["https://www.googleapis.com/auth/drive"]
           creds = service_account.Credentials.from_service_account_file("sa.json", scopes=SCOPES)
-          service = build("drive", "v3", credentials=creds, cache_discovery=False)
+          drive = build("drive", "v3", credentials=creds, cache_discovery=False)
       
+          # 1) ตรวจการเข้าถึงไฟล์ปลายทาง
           try:
-            meta = service.files().get(
-              fileId=file_id,
-              fields="id,name,owners(emailAddress)"
-            ).execute()
+            meta = drive.files().get(fileId=file_id, fields="id,name,mimeType,owners(emailAddress)").execute()
             print(f"✅ Access OK: {meta['name']} ({meta['id']}) | owner={meta['owners'][0]['emailAddress']}")
+            if meta["mimeType"].startswith("application/vnd.google-apps"):
+              print("❌ Target is a Google Doc/Sheet. This step supports only CSV binary files.", file=sys.stderr)
+              sys.exit(3)
           except HttpError as e:
-            print(f"❌ Cannot access fileId={file_id}. Detail: {e}")
-            sys.exit(3)
+            print(f"❌ Cannot access fileId={file_id}. Detail: {e}"); sys.exit(3)
       
+          # 2) โหลดไฟล์เดิม (ถ้าอ่าน encoding ปกติไม่ได้ จะลอง utf-8-sig)
+          old_df = pd.DataFrame()
           try:
-            media = MediaFileUpload(csv_path, mimetype="text/csv", resumable=False)
-            updated = service.files().update(
+            buf = io.BytesIO()
+            req = drive.files().get_media(fileId=file_id)
+            dl = MediaIoBaseDownload(buf, req)
+            done = False
+            while not done:
+              status, done = dl.next_chunk()
+            buf.seek(0)
+            try:
+              old_df = pd.read_csv(buf)
+            except Exception:
+              buf.seek(0)
+              old_df = pd.read_csv(buf, encoding="utf-8-sig")
+            print(f"ℹ️ Loaded existing rows: {len(old_df)}")
+          except HttpError as e:
+            # ถ้าดาวน์โหลดไม่ได้ (เช่นไฟล์ว่างเพิ่งสร้าง) จะถือว่าเก่าเป็นค่าว่าง
+            print(f"⚠️ Could not download existing CSV, assume empty. Detail: {e}")
+      
+          # 3) โหลดข้อมูลใหม่จากรอบนี้
+          try:
+            new_df = pd.read_csv(csv_path)
+            print(f"ℹ️ New rows: {len(new_df)}")
+          except Exception as e:
+            print(f"❌ Failed to read local CSV: {e}"); sys.exit(2)
+      
+          # 4) รวม + ลบซ้ำอย่างปลอดภัย
+          merged = pd.concat([old_df, new_df], ignore_index=True)
+      
+          # ถ้ามีคีย์ Province + DateTime ให้ใช้เป็น unique key
+          if {"Province", "DateTime"}.issubset(merged.columns):
+            merged.drop_duplicates(subset=["Province", "DateTime"], keep="last", inplace=True)
+            # จัดเรียงเวลาถ้าพาร์สได้
+            try:
+              merged["DateTime"] = pd.to_datetime(merged["DateTime"], errors="coerce")
+              merged.sort_values("DateTime", inplace=True)
+            except Exception:
+              pass
+          else:
+            merged.drop_duplicates(keep="last", inplace=True)
+      
+          tmp_path = "__merged_out.csv"
+          merged.to_csv(tmp_path, index=False, encoding="utf-8-sig")
+          print(f"📝 Merged rows total: {len(merged)}")
+      
+          # 5) อัปเดตทับไฟล์เดิมด้วยเนื้อหา merged
+          try:
+            media = MediaFileUpload(tmp_path, mimetype="text/csv", resumable=False)
+            updated = drive.files().update(
               fileId=file_id,
               media_body=media,
               fields="id,name,modifiedTime,size"
             ).execute()
-            print(f"✅ Updated: {updated['name']} | size={updated.get('size')} | modifiedTime={updated['modifiedTime']}")
+            print(f"✅ Updated (appended): {updated['name']} | size={updated.get('size')} | modifiedTime={updated['modifiedTime']}")
           except HttpError as e:
-            print(f"❌ Update failed: {e}")
-            sys.exit(4)
+            print(f"❌ Update failed: {e}"); sys.exit(4)
           PY
-
